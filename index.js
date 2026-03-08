@@ -10,7 +10,7 @@ const startHandler = require('./handlers/start');
 const { buildHandler, handleBuildInput, handlePayment, requestZipDownload } = require('./handlers/build');
 const { myBuildsHandler, handleUpdateDomain, handleDomainUpdateInput } = require('./handlers/mybuilds');
 const statisticsHandler = require('./handlers/statistics');
-const { supportHandler, handleSupportInput, handleAdminSupportActions } = require('./handlers/support');
+const { supportHandler, handleSupportInput, handleAdminSupportActions, handleAdminReply } = require('./handlers/support');
 const { handlePaymentApproval, handleDownload } = require('./handlers/payment');
 
 // Reminder service
@@ -57,8 +57,14 @@ bot.on('message', async (msg) => {
   if (text && text.startsWith('/')) return;
 
   try {
+    // Handle admin replies first
+    if (msg.reply_to_message && global.replyContext) {
+      await handleAdminReply(bot, msg);
+      return;
+    }
+
     // Check if user is in build state
-    if (global.buildStates && global.buildStates[userId]) {
+    if (global.buildStates[userId]) {
       if (text === '❌ Cancel') {
         delete global.buildStates[userId];
         await bot.sendMessage(chatId, '❌ Build cancelled.', {
@@ -77,7 +83,7 @@ bot.on('message', async (msg) => {
     }
 
     // Check if user is in payment state
-    if (global.paymentStates && global.paymentStates[userId]) {
+    if (global.paymentStates[userId]) {
       if (text === '❌ Cancel') {
         delete global.paymentStates[userId];
         await bot.sendMessage(chatId, '❌ Payment cancelled.', {
@@ -96,7 +102,7 @@ bot.on('message', async (msg) => {
     }
 
     // Check if user is in support state
-    if (global.supportStates && global.supportStates[userId]) {
+    if (global.supportStates[userId]) {
       if (text === '❌ Cancel') {
         delete global.supportStates[userId];
         await bot.sendMessage(chatId, '❌ Support cancelled.', {
@@ -115,7 +121,7 @@ bot.on('message', async (msg) => {
     }
 
     // Check if user is in domain update state
-    if (global.domainUpdateStates && global.domainUpdateStates[userId]) {
+    if (global.domainUpdateStates[userId]) {
       if (text === '❌ Cancel') {
         delete global.domainUpdateStates[userId];
         await bot.sendMessage(chatId, '❌ Domain update cancelled.', {
@@ -134,25 +140,16 @@ bot.on('message', async (msg) => {
     }
 
     // Handle main menu buttons
-    switch(text) {
-      case '🛠 Build New':
-        await buildHandler(bot, msg);
-        break;
-      case '👨‍💻 My Builds':
-        await myBuildsHandler(bot, msg);
-        break;
-      case '📊 Statistics':
-        await statisticsHandler(bot, msg);
-        break;
-      case '🚨 Support':
-        await supportHandler(bot, msg);
-        break;
-      case '📁 Request ZIP Download':
-        await requestZipDownload(bot, msg);
-        break;
-      default:
-        // Ignore unknown messages
-        break;
+    if (text === '🛠 Build New') {
+      await buildHandler(bot, msg);
+    } else if (text === '👨‍💻 My Builds') {
+      await myBuildsHandler(bot, msg);
+    } else if (text === '📊 Statistics') {
+      await statisticsHandler(bot, msg);
+    } else if (text === '🚨 Support') {
+      await supportHandler(bot, msg);
+    } else if (text === '📁 Request ZIP Download') {
+      await requestZipDownload(bot, msg);
     }
   } catch (error) {
     console.error('❌ Message handler error:', error);
@@ -176,10 +173,9 @@ bot.on('callback_query', async (callbackQuery) => {
     }
     else if (data.startsWith('pay_')) {
       const projectId = data.split('_')[1];
-      global.paymentStates = global.paymentStates || {};
       global.paymentStates[userId] = {
         step: 'payment',
-        projectId: projectId,
+        projectId: parseInt(projectId),
         amount: 499,
         userId: userId,
         chatId: callbackQuery.message.chat.id
@@ -187,7 +183,7 @@ bot.on('callback_query', async (callbackQuery) => {
       
       await bot.sendMessage(callbackQuery.message.chat.id,
         '💰 *ZIP Download Payment*\n\n' +
-        'Please send your payment screenshot:',
+        '📸 Please send your payment screenshot:',
         {
           parse_mode: 'Markdown',
           reply_markup: {
@@ -206,7 +202,7 @@ bot.on('callback_query', async (callbackQuery) => {
     }
   } catch (error) {
     console.error('❌ Callback handler error:', error);
-    await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Error processing request' });
+    await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Error' });
   }
 });
 
@@ -215,12 +211,13 @@ bot.on('polling_error', (error) => {
   console.error('⚠️ Polling error:', error);
 });
 
-// Start reminders
+// Start reminders every 24 hours
 setInterval(() => {
   sendChannelReminders(bot).catch(console.error);
   checkLeftMembers(bot).catch(console.error);
 }, 24 * 60 * 60 * 1000);
 
+// Run reminders after 5 minutes on startup
 setTimeout(() => {
   sendChannelReminders(bot).catch(console.error);
   checkLeftMembers(bot).catch(console.error);
