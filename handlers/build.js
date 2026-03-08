@@ -1,22 +1,19 @@
-const { createProject } = require('../database');
+const { createProject, updateProjectDomain, createPayment } = require('../database');
 require('dotenv').config();
 
 const PAYMENT_QR_URL = process.env.PAYMENT_QR_URL;
-const BUILD_PRICE = parseInt(process.env.BUILD_PRICE);
+const DOWNLOAD_PRICE = 499;
 const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
 
 const buildHandler = async (bot, msg) => {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
 
-  // Initialize build state
   global.buildStates[userId] = { 
     step: 'project_name',
     userId: userId,
     chatId: chatId
   };
-
-  console.log(`Build started for user ${userId}`); // Debug log
 
   await bot.sendMessage(chatId, 
     '📝 *Let\'s build your project!*\n\nPlease enter a name for your project:',
@@ -24,8 +21,7 @@ const buildHandler = async (bot, msg) => {
       parse_mode: 'Markdown',
       reply_markup: {
         keyboard: [['❌ Cancel']],
-        resize_keyboard: true,
-        one_time_keyboard: false
+        resize_keyboard: true
       }
     }
   );
@@ -36,102 +32,53 @@ const handleBuildInput = async (bot, msg) => {
   const userId = msg.from.id;
   const text = msg.text;
 
-  console.log(`Build input from ${userId}: ${text}`); // Debug log
-  console.log('Current state:', global.buildStates[userId]);
-
   const state = global.buildStates[userId];
-  if (!state) {
-    console.log('No state found for user:', userId);
-    return;
-  }
+  if (!state) return;
 
-  switch (state.step) {
-    case 'project_name':
-      state.projectName = text;
-      state.step = 'project_type';
-      
-      await bot.sendMessage(chatId,
-        '📱 *Select Project Type:*\n\nChoose the type of project you want to create:',
-        {
-          parse_mode: 'Markdown',
-          reply_markup: {
-            keyboard: [
-              ['🌐 Website', '📱 Web App'],
-              ['🤖 Android App', '🍎 iOS App'],
-              ['❌ Cancel']
-            ],
-            resize_keyboard: true
-          }
+  try {
+    switch (state.step) {
+      case 'project_name':
+        if (!text || text.length < 3) {
+          await bot.sendMessage(chatId, '❌ Project name must be at least 3 characters long. Please try again:');
+          return;
         }
-      );
-      break;
-
-    case 'project_type':
-      const typeMap = {
-        '🌐 Website': 'website',
-        '📱 Web App': 'webapp',
-        '🤖 Android App': 'android',
-        '🍎 iOS App': 'ios'
-      };
-      
-      if (!typeMap[text]) {
-        await bot.sendMessage(chatId, '❌ Please select a valid option from the keyboard.');
-        return;
-      }
-      
-      state.projectType = typeMap[text];
-      state.step = 'description';
-      
-      await bot.sendMessage(chatId,
-        '✍️ *Describe your project:*\n\nTell me what you want to build. Be as detailed as possible:',
-        {
-          parse_mode: 'Markdown',
-          reply_markup: {
-            keyboard: [['❌ Cancel']],
-            resize_keyboard: true
-          }
-        }
-      );
-      break;
-
-    case 'description':
-      state.description = text;
-      
-      try {
-        // Create project in database
-        const project = await createProject(userId, state.projectName, state.projectType, state.description);
-        
-        // Save project ID in state
-        state.projectId = project.project_id;
-        state.step = 'domain';
+        state.projectName = text;
+        state.step = 'project_type';
         
         await bot.sendMessage(chatId,
-          '🌐 *Domain Setup*\n\nDo you want to use a custom domain?',
+          '📱 *Select Project Type:*',
           {
             parse_mode: 'Markdown',
             reply_markup: {
               keyboard: [
-                ['✅ Yes, use custom domain'],
-                ['⏩ No, use subdomain'],
+                ['🌐 Website', '📱 Web App'],
+                ['🤖 Android App', '🍎 iOS App'],
                 ['❌ Cancel']
               ],
               resize_keyboard: true
             }
           }
         );
-      } catch (error) {
-        console.error('Error creating project:', error);
-        await bot.sendMessage(chatId, '❌ Error creating project. Please try again.');
-        delete global.buildStates[userId];
-      }
-      break;
+        break;
 
-    case 'domain':
-      if (text === '✅ Yes, use custom domain') {
-        state.useCustomDomain = true;
-        state.step = 'custom_domain';
+      case 'project_type':
+        const typeMap = {
+          '🌐 Website': 'website',
+          '📱 Web App': 'webapp',
+          '🤖 Android App': 'android',
+          '🍎 iOS App': 'ios'
+        };
+        
+        if (!typeMap[text]) {
+          await bot.sendMessage(chatId, '❌ Please select a valid option from the keyboard.');
+          return;
+        }
+        
+        state.projectType = typeMap[text];
+        state.step = 'description';
+        
         await bot.sendMessage(chatId,
-          '🔗 *Enter your custom domain:*\n\nExample: mywebsite.com',
+          '✍️ *Describe your project:*',
           {
             parse_mode: 'Markdown',
             reply_markup: {
@@ -140,44 +87,201 @@ const handleBuildInput = async (bot, msg) => {
             }
           }
         );
-      } else if (text === '⏩ No, use subdomain') {
-        state.useCustomDomain = false;
-        await processPayment(bot, chatId, userId, state);
-      } else {
-        await bot.sendMessage(chatId, '❌ Please select a valid option from the keyboard.');
-      }
-      break;
+        break;
 
-    case 'custom_domain':
-      state.customDomain = text;
-      await processPayment(bot, chatId, userId, state);
-      break;
+      case 'description':
+        if (!text || text.length < 10) {
+          await bot.sendMessage(chatId, '❌ Please provide more details (minimum 10 characters).');
+          return;
+        }
+        
+        state.description = text;
+        
+        // Create project in database
+        const project = await createProject(userId, state.projectName, state.projectType, state.description);
+        state.projectId = project.project_id;
+        
+        // Domain selection - FREE
+        state.step = 'domain_choice';
+        
+        await bot.sendMessage(chatId,
+          '🌐 *Domain Setup - COMPLETELY FREE*\n\n' +
+          'Choose your domain option:\n\n' +
+          '1️⃣ *Free Subdomain* (yourname.clickdev-ai.net)\n' +
+          '2️⃣ *Custom Domain* (yourown.com)\n\n' +
+          '💰 *Note:* ₹499 is only for DOWNLOADING the ZIP file.\n' +
+          'Building and domain connection are FREE!\n\n' +
+          'Please select 1 or 2:',
+          {
+            parse_mode: 'Markdown',
+            reply_markup: {
+              keyboard: [
+                ['1️⃣ Free Subdomain'],
+                ['2️⃣ Custom Domain'],
+                ['❌ Cancel']
+              ],
+              resize_keyboard: true
+            }
+          }
+        );
+        break;
+
+      case 'domain_choice':
+        if (text === '1️⃣ Free Subdomain') {
+          state.step = 'subdomain_input';
+          await bot.sendMessage(chatId,
+            '📝 *Enter Subdomain Name*\n\n' +
+            'Enter the name for your subdomain (e.g., myproject):',
+            {
+              parse_mode: 'Markdown',
+              reply_markup: {
+                keyboard: [['❌ Cancel']],
+                resize_keyboard: true
+              }
+            }
+          );
+        } else if (text === '2️⃣ Custom Domain') {
+          state.step = 'custom_domain_input';
+          await bot.sendMessage(chatId,
+            '🔗 *Enter Your Custom Domain*\n\n' +
+            'Enter your domain name (e.g., example.com):',
+            {
+              parse_mode: 'Markdown',
+              reply_markup: {
+                keyboard: [['❌ Cancel']],
+                resize_keyboard: true
+              }
+            }
+          );
+        } else {
+          await bot.sendMessage(chatId, '❌ Please select 1 or 2 from the keyboard.');
+        }
+        break;
+
+      case 'subdomain_input':
+        if (!text || text.length < 3) {
+          await bot.sendMessage(chatId, '❌ Subdomain must be at least 3 characters. Try again:');
+          return;
+        }
+        
+        const subdomain = `${text.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${userId}.clickdev-ai.net`;
+        
+        // Save domain to project
+        await updateProjectDomain(state.projectId, null, subdomain);
+        
+        await bot.sendMessage(chatId,
+          '✅ *Project Created Successfully!*\n\n' +
+          `📁 Project: ${state.projectName}\n` +
+          `🌐 Subdomain: *${subdomain}*\n\n` +
+          '📌 *What next?*\n' +
+          '• View in 👨‍💻 My Builds\n' +
+          '• Pay ₹499 to download ZIP\n' +
+          '• Update domain anytime FREE\n\n' +
+          'Select an option:',
+          {
+            parse_mode: 'Markdown',
+            reply_markup: {
+              keyboard: [
+                ['👨‍💻 My Builds'],
+                ['📁 Request ZIP Download'],
+                ['❌ Cancel']
+              ],
+              resize_keyboard: true
+            }
+          }
+        );
+        
+        delete global.buildStates[userId];
+        break;
+
+      case 'custom_domain_input':
+        if (!text.includes('.') || text.length < 4) {
+          await bot.sendMessage(chatId, '❌ Invalid domain. Please enter a valid domain (e.g., example.com):');
+          return;
+        }
+        
+        const customDomain = text.toLowerCase();
+        
+        // Save domain to project
+        await updateProjectDomain(state.projectId, customDomain, null);
+        
+        // DNS Instructions
+        const dnsInstructions = `
+📋 *DNS Configuration Instructions*
+
+To connect *${customDomain}*, add this A record:
+
+📌 *A Record:*
+• Type: A
+• Name: @
+• Value: 75.2.60.5
+• TTL: 3600
+
+📌 *CNAME Record (for www):*
+• Type: CNAME
+• Name: www
+• Value: ${state.projectName.toLowerCase().replace(/[^a-z0-9]/g, '-')}.netlify.app
+
+⏱ *Propagation Time:* 24-48 hours
+        `;
+
+        await bot.sendMessage(chatId,
+          '✅ *Project Created Successfully!*\n\n' +
+          `📁 Project: ${state.projectName}\n` +
+          `🌐 Domain: *${customDomain}*\n\n` +
+          dnsInstructions +
+          '\n\n📌 *What next?*\n' +
+          '• View in 👨‍💻 My Builds\n' +
+          '• Pay ₹499 to download ZIP\n' +
+          '• Update domain anytime FREE',
+          {
+            parse_mode: 'Markdown',
+            reply_markup: {
+              keyboard: [
+                ['👨‍💻 My Builds'],
+                ['📁 Request ZIP Download'],
+                ['❌ Cancel']
+              ],
+              resize_keyboard: true
+            }
+          }
+        );
+        
+        delete global.buildStates[userId];
+        break;
+    }
+  } catch (error) {
+    console.error('Build error:', error);
+    await bot.sendMessage(chatId, '❌ An error occurred. Please try again.');
   }
 };
 
-const processPayment = async (bot, chatId, userId, state) => {
-  state.step = 'payment';
-  
-  const paymentMessage = `
-💰 *Payment Required*
+const requestZipDownload = async (bot, msg) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
 
-To proceed with your project "${state.projectName}", please complete the payment.
+  const { getUserProjects } = require('../database');
+  const projects = await getUserProjects(userId);
+  const pendingProject = projects.find(p => p.status === 'pending');
 
-💵 *Amount:* ₹${BUILD_PRICE}
-📱 *UPI Payment:* Scan the QR code below
+  if (!pendingProject) {
+    await bot.sendMessage(chatId,
+      '❌ *No pending project found*\n\nCreate a new project with 🛠 Build New',
+      { parse_mode: 'Markdown' }
+    );
+    return;
+  }
 
-📸 *Steps:*
-1. Scan the QR code and make payment
-2. Take a screenshot of the payment
-3. Send the screenshot along with UTR number
-
-⬇️ *QR Code:* [Click here to view](${PAYMENT_QR_URL})
-
-Please send your payment screenshot and UTR number:
-  `;
+  global.paymentStates[userId] = {
+    step: 'payment',
+    projectId: pendingProject.project_id,
+    amount: DOWNLOAD_PRICE,
+    userId: userId,
+    chatId: chatId
+  };
 
   await bot.sendPhoto(chatId, PAYMENT_QR_URL, {
-    caption: paymentMessage,
+    caption: `💰 *ZIP Download - ₹${DOWNLOAD_PRICE}*\n\n📸 Send payment screenshot:`,
     parse_mode: 'Markdown',
     reply_markup: {
       keyboard: [['❌ Cancel']],
@@ -189,67 +293,75 @@ Please send your payment screenshot and UTR number:
 const handlePayment = async (bot, msg) => {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
-  const state = global.buildStates[userId];
+  const state = global.paymentStates[userId];
 
-  console.log(`Payment input from ${userId}`); // Debug log
+  if (!state) return;
 
-  if (!state || state.step !== 'payment') {
-    console.log('Not in payment state');
-    return;
-  }
-
-  if (msg.photo) {
-    // Get the largest photo
-    const photo = msg.photo[msg.photo.length - 1];
-    state.screenshotFileId = photo.file_id;
-    
-    await bot.sendMessage(chatId,
-      '📝 Please enter the UTR number from your payment:',
-      {
-        reply_markup: {
-          keyboard: [['❌ Cancel']],
-          resize_keyboard: true
+  try {
+    // Handle photo (screenshot)
+    if (msg.photo) {
+      const photo = msg.photo[msg.photo.length - 1];
+      state.screenshotFileId = photo.file_id;
+      
+      await bot.sendMessage(chatId,
+        '📝 *Enter UTR Number*\n\nPaste the UTR number from your payment:',
+        {
+          parse_mode: 'Markdown',
+          reply_markup: {
+            keyboard: [['❌ Cancel']],
+            resize_keyboard: true
+          }
         }
+      );
+      return;
+    }
+
+    // Handle UTR text
+    if (msg.text && !state.utrNumber && state.screenshotFileId) {
+      const utrNumber = msg.text.trim();
+      
+      if (!utrNumber || utrNumber.length < 6) {
+        await bot.sendMessage(chatId, '❌ Invalid UTR. Please enter a valid UTR number:');
+        return;
       }
-    );
-  } else if (msg.text && !state.utrNumber) {
-    // This is the UTR number
-    state.utrNumber = msg.text;
-    
-    try {
+
+      state.utrNumber = utrNumber;
+
       // Get file URL
       const file = await bot.getFile(state.screenshotFileId);
       const fileUrl = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${file.file_path}`;
-      
+
+      // Create payment record
+      const payment = await createPayment(
+        userId,
+        state.projectId,
+        state.amount,
+        state.utrNumber,
+        fileUrl
+      );
+
       // Notify admin
-      const adminMessage = `
-🔔 *New Payment Request*
-
-👤 *User:* ${userId}
-📱 *Username:* @${msg.from.username || 'N/A'}
-📁 *Project:* ${state.projectName}
-💰 *Amount:* ₹${BUILD_PRICE}
-📋 *UTR:* ${state.utrNumber}
-
-🖼 *Screenshot:* ${fileUrl}
-
-Project ID: ${state.projectId}
-      `;
-
-      await bot.sendMessage(ADMIN_CHAT_ID, adminMessage, {
-        parse_mode: 'Markdown',
-        reply_markup: {
-          inline_keyboard: [
-            [
-              { text: '✅ Approve', callback_data: `approve_${state.projectId}` },
-              { text: '❌ Reject', callback_data: `reject_${state.projectId}` }
-            ]
-          ]
+      await bot.sendMessage(ADMIN_CHAT_ID,
+        `🔔 *New Payment Request*\n\n` +
+        `👤 User: ${userId}\n` +
+        `📁 Project ID: ${state.projectId}\n` +
+        `💰 Amount: ₹${state.amount}\n` +
+        `📋 UTR: ${state.utrNumber}\n` +
+        `🖼 Screenshot: ${fileUrl}`,
+        {
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [[
+              { text: '✅ Approve', callback_data: `approve_${payment.payment_id}_${state.projectId}` },
+              { text: '❌ Reject', callback_data: `reject_${payment.payment_id}` }
+            ]]
+          }
         }
-      });
+      );
 
       await bot.sendMessage(chatId,
-        '✅ *Payment submitted successfully!*\n\nYour payment is pending admin approval. You will be notified once approved.',
+        '✅ *Payment Submitted!*\n\n' +
+        'Admin will verify your payment. You\'ll receive your ZIP file once approved.',
         {
           parse_mode: 'Markdown',
           reply_markup: {
@@ -262,14 +374,22 @@ Project ID: ${state.projectId}
         }
       );
 
-      // Clear state
-      delete global.buildStates[userId];
-
-    } catch (error) {
-      console.error('Payment processing error:', error);
+      delete global.paymentStates[userId];
+    }
+  } catch (error) {
+    console.error('Payment error:', error);
+    
+    if (error.message === 'UTR number already used') {
+      await bot.sendMessage(chatId, '❌ This UTR has already been used. Please check and try again.');
+    } else {
       await bot.sendMessage(chatId, '❌ Error processing payment. Please try again.');
     }
   }
 };
 
-module.exports = { buildHandler, handleBuildInput, handlePayment };
+module.exports = { 
+  buildHandler, 
+  handleBuildInput, 
+  handlePayment,
+  requestZipDownload 
+};
