@@ -1,15 +1,20 @@
-const TelegramBot = require('node-telegram-bot-api');
-const { createSupportTicket, closeSupportTicket } = require('../database');
+const { createSupportTicket } = require('../database');
 require('dotenv').config();
 
 const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
-const supportStates = {};
 
 const supportHandler = async (bot, msg) => {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
 
-  supportStates[userId] = { active: true };
+  // Initialize support state
+  global.supportStates[userId] = { 
+    active: true,
+    userId: userId,
+    chatId: chatId
+  };
+
+  console.log(`Support started for user ${userId}`); // Debug log
 
   await bot.sendMessage(chatId,
     '🚨 *Support Center*\n\nPlease describe your issue or question. Our team will respond shortly.\n\nType your message below or click ❌ Cancel to exit:',
@@ -28,19 +33,10 @@ const handleSupportInput = async (bot, msg) => {
   const userId = msg.from.id;
   const text = msg.text;
 
-  if (!supportStates[userId]) return;
+  console.log(`Support input from ${userId}: ${text}`); // Debug log
 
-  if (text === '❌ Cancel') {
-    delete supportStates[userId];
-    await bot.sendMessage(chatId, 'Support session cancelled.', {
-      reply_markup: {
-        keyboard: [
-          ['🛠 Build New', '👨‍💻 My Builds'],
-          ['📊 Statistics', '🚨 Support']
-        ],
-        resize_keyboard: true
-      }
-    });
+  if (!global.supportStates[userId]) {
+    console.log('No support state found for user:', userId);
     return;
   }
 
@@ -54,7 +50,7 @@ const handleSupportInput = async (bot, msg) => {
 Ticket ID: ${ticket.ticket_id}
 
 👤 *User:* ${userId}
-📱 *Username:* @${msg.from.username}
+📱 *Username:* @${msg.from.username || 'N/A'}
 📝 *Message:*
 ${text}
 
@@ -66,7 +62,7 @@ ${text}
       reply_markup: {
         inline_keyboard: [
           [
-            { text: '✅ Mark as Resolved', callback_data: `resolve_${ticket.ticket_id}` },
+            { text: '✅ Resolved', callback_data: `resolve_${ticket.ticket_id}` },
             { text: '💬 Reply', callback_data: `reply_${ticket.ticket_id}_${userId}` }
           ]
         ]
@@ -87,7 +83,8 @@ ${text}
       }
     );
 
-    delete supportStates[userId];
+    // Clear support state
+    delete global.supportStates[userId];
 
   } catch (error) {
     console.error('Support error:', error);
@@ -95,14 +92,4 @@ ${text}
   }
 };
 
-const resolveTicket = async (bot, ticketId) => {
-  try {
-    await closeSupportTicket(ticketId);
-    return { success: true };
-  } catch (error) {
-    console.error('Resolve ticket error:', error);
-    return { success: false };
-  }
-};
-
-module.exports = { supportHandler, handleSupportInput, resolveTicket };
+module.exports = { supportHandler, handleSupportInput };
