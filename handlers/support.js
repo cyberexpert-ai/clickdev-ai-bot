@@ -1,4 +1,4 @@
-const { createSupportTicket } = require('../database');
+const { createSupportTicket, getSupportTicket, updateTicketStatus } = require('../database');
 require('dotenv').config();
 
 const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
@@ -7,17 +7,10 @@ const supportHandler = async (bot, msg) => {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
 
-  // Initialize support state
-  global.supportStates[userId] = { 
-    active: true,
-    userId: userId,
-    chatId: chatId
-  };
-
-  console.log(`Support started for user ${userId}`); // Debug log
+  global.supportStates[userId] = { active: true };
 
   await bot.sendMessage(chatId,
-    '🚨 *Support Center*\n\nPlease describe your issue or question. Our team will respond shortly.\n\nType your message below or click ❌ Cancel to exit:',
+    '🚨 *Support Center*\n\nDescribe your issue:',
     {
       parse_mode: 'Markdown',
       reply_markup: {
@@ -33,44 +26,31 @@ const handleSupportInput = async (bot, msg) => {
   const userId = msg.from.id;
   const text = msg.text;
 
-  console.log(`Support input from ${userId}: ${text}`); // Debug log
-
-  if (!global.supportStates[userId]) {
-    console.log('No support state found for user:', userId);
-    return;
-  }
+  if (!global.supportStates[userId]) return;
 
   try {
-    // Create support ticket
     const ticket = await createSupportTicket(userId, text);
 
     // Notify admin
-    const adminMessage = `
-🚨 *New Support Ticket*
-Ticket ID: ${ticket.ticket_id}
-
-👤 *User:* ${userId}
-📱 *Username:* @${msg.from.username || 'N/A'}
-📝 *Message:*
-${text}
-
-⏰ *Time:* ${new Date().toLocaleString()}
-    `;
-
-    await bot.sendMessage(ADMIN_CHAT_ID, adminMessage, {
-      parse_mode: 'Markdown',
-      reply_markup: {
-        inline_keyboard: [
-          [
-            { text: '✅ Resolved', callback_data: `resolve_${ticket.ticket_id}` },
+    await bot.sendMessage(ADMIN_CHAT_ID,
+      `🚨 *New Support Ticket #${ticket.ticket_id}*\n\n` +
+      `👤 User: ${userId}\n` +
+      `📝 Message: ${text}\n` +
+      `⏰ Time: ${new Date().toLocaleString()}`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [[
+            { text: '✅ Resolve', callback_data: `resolve_${ticket.ticket_id}` },
             { text: '💬 Reply', callback_data: `reply_${ticket.ticket_id}_${userId}` }
-          ]
-        ]
+          ]]
+        }
       }
-    });
+    );
 
+    // Confirm to user
     await bot.sendMessage(chatId,
-      '✅ *Your support ticket has been submitted!*\n\nWe will get back to you shortly.',
+      '✅ *Ticket Submitted!*\n\nWe\'ll respond soon.',
       {
         parse_mode: 'Markdown',
         reply_markup: {
@@ -83,13 +63,115 @@ ${text}
       }
     );
 
-    // Clear support state
     delete global.supportStates[userId];
 
   } catch (error) {
     console.error('Support error:', error);
-    await bot.sendMessage(chatId, '❌ Error submitting support ticket. Please try again.');
+    await bot.sendMessage(chatId, '❌ Error submitting ticket.');
   }
 };
 
-module.exports = { supportHandler, handleSupportInput };
+const handleAdminSupportActions = async (bot, callbackQuery) => {
+  const data = callbackQuery.data;
+  const message = callbackQuery.message;
+  const adminId = callbackQuery.from.id;
+
+  // Verify admin
+  if (adminId.toString() !== ADMIN_CHAT_ID) {
+    await bot.answerCallbackQuery(callbackQuery.id, { text: '⛔ Unauthorized!' });
+    return;
+  }
+
+  try {
+    if (data.startsWith('resolve_')) {
+      const ticketId = parseInt(data.split('_')[1]);
+      
+      // Update ticket status
+      await updateTicketStatus(ticketId, 'resolved');
+      
+      // Get ticket info
+      const ticket = await getSupportTicket(ticketId);
+      
+      // Notify user
+      if (ticket) {
+        await bot.sendMessage(ticket.user_id,
+          '✅ *Ticket Resolved*\n\nYour support ticket has been resolved. If you have more issues, please create a new ticket.',
+          { parse_mode: 'Markdown' }
+        );
+      }
+      
+      // Update admin message
+      await bot.editMessageText(
+        `✅ *Ticket Resolved*\n\nTicket #${ticketId} has been marked as resolved.`,
+        {
+          chat_id: message.chat.id,
+          message_id: message.message_id,
+          parse_mode: 'Markdown'
+        }
+      );
+      
+      await bot.answerCallbackQuery(callbackQuery.id, { text: '✅ Resolved' });
+      
+    } else if (data.startsWith('reply_')) {
+      const parts = data.split('_');
+      const ticketId = parseInt(parts[1]);
+      const userId = parseInt(parts[2]);
+      
+      // Store context for reply
+      global.replyContext = {
+        ticketId: ticketId,
+        userId: userId,
+        adminId: adminId
+      };
+      
+      await bot.sendMessage(ADMIN_CHAT_ID,
+        `💬 *Reply to User*\n\nType your reply below:`,
+        {
+          parse_mode: 'Markdown',
+          reply_markup: { force_reply: true }
+        }
+      );
+      
+      await bot.answerCallbackQuery(callbackQuery.id);
+    }
+  } catch (error) {
+    console.error('Admin action error:', error);
+    await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Error' });
+  }
+};
+
+const handleAdminReply = async (bot, msg) => {
+  if (msg.reply_to_message && global.replyContext) {
+    const { userId, ticketId } = global.replyContext;
+    const reply = msg.text;
+    
+    if (reply && reply !== '❌ Cancel') {
+      try {
+        // Send reply to user
+        await bot.sendMessage(userId,
+          `📨 *Support Reply*\n\n${reply}\n\n- ClickDev AI Support Team`,
+          { parse_mode: 'Markdown' }
+        );
+        
+        // Confirm to admin
+        await bot.sendMessage(msg.chat.id, 
+          '✅ Reply sent to user.',
+          { parse_mode: 'Markdown' }
+        );
+        
+        // Clear context
+        delete global.replyContext;
+      } catch (error) {
+        console.error('Admin reply error:', error);
+        await bot.sendMessage(msg.chat.id, '❌ Failed to send reply.');
+      }
+    }
+  }
+};
+
+module.exports = { 
+  supportHandler, 
+  handleSupportInput, 
+  handleAdminSupportActions,
+  handleAdminReply 
+};
